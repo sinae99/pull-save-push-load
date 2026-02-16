@@ -59,5 +59,3 @@ ansible-playbook playbooks/push-load.yml -l vm1,vm2
 - `inventory/hosts.ini` – target hosts (your 3 IPs or more).
 - `inventory/group_vars/all.yml` – default `docker_images` and options.
 - `playbooks/push-load.yml` – single playbook.
-
-This folder is separate from `ansible-old` and `final`; use it whenever you need to ship images to the same (or different) hosts.
