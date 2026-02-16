@@ -3,7 +3,8 @@
 # Usage:
 #   Full:  ansible-playbook playbooks/push-load.yml
 #   No pull (images already on controller): ansible-playbook playbooks/push-load.yml -e "push_load_skip_pull=true"
-#   Custom images: ansible-playbook playbooks/push-load.yml -e "docker_images=citusdata/pg_auto_failover:latest redis:7.2-alpine"
+#   Custom images: ansible-playbook playbooks/push-load.yml -e "docker_images=busybox:latest"
+#   Multiple images: ansible-playbook playbooks/push-load.yml -e "docker_images='busybox:latest redis:7.2-alpine'"
 #   Existing tarballs only (no pull/save): ansible-playbook playbooks/push-load.yml -e "push_load_tarballs_dir=/path/to/tars"
 #   Limit hosts: ansible-playbook playbooks/push-load.yml -l vm1,vm2
 
@@ -11,48 +12,101 @@
   hosts: localhost
   connection: local
   gather_facts: false
-  vars:
-    # When set, we only copy/load existing .tar from this dir (no pull, no save)
-    push_load_tarballs_dir: "{{ push_load_tarballs_dir | default('') }}"
-    use_existing_tarballs: "{{ push_load_tarballs_dir | length > 0 }}"
-    # Allow docker_images as space-separated string from -e "docker_images=img1 img2"
-    docker_images: "{{ docker_images if docker_images is sequence and docker_images is not string else (docker_images.split() if docker_images is string else []) }}"
+  become: false
   tasks:
+    - name: Normalize docker_images to list (handle string from -e "docker_images=img1" or "docker_images=img1 img2")
+      set_fact:
+        docker_images_list: "{{ (docker_images.split(' ') if docker_images is string else docker_images) | default([]) | list }}"
+
+    - name: Fail if docker_images not set or empty
+      fail:
+        msg: "docker_images must be set (inventory/group_vars/all.yml or -e 'docker_images=img1' or -e 'docker_images=img1 img2')"
+      when: docker_images_list | default([]) | length == 0
+
     - name: Use existing tarballs dir (no pull/save)
       set_fact:
         controller_tarball_dir: "{{ push_load_tarballs_dir }}"
         push_load_tar_list: "{{ lookup('fileglob', push_load_tarballs_dir + '/*.tar', wantlist=true) }}"
-      when: use_existing_tarballs
+      when: push_load_tarballs_dir is defined and push_load_tarballs_dir | length > 0
+
+    - name: Get current user's home directory for default path
+      command: echo $HOME
+      register: user_home
+      changed_when: false
+      when: >
+        (push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0)
+        and push_load_tarball_dir == "/tmp/docker-push-load"
+
+    - name: Use home directory instead of /tmp for tarball storage
+      set_fact:
+        push_load_tarball_dir: "{{ user_home.stdout }}/.docker-push-load"
+      when: >
+        (push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0)
+        and push_load_tarball_dir == "/tmp/docker-push-load"
+        and user_home.stdout is defined
 
     - name: Ensure tarball directory on controller
       file:
         path: "{{ push_load_tarball_dir }}"
         state: directory
         mode: "0755"
-      when: not use_existing_tarballs
+      when: push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0
 
-    - name: Pull Docker images (skip with -e push_load_skip_pull=true)
+    - name: Check if Docker image exists locally
+      command: docker image inspect {{ item }}
+      register: image_check_result
+      failed_when: false
+      changed_when: false
+      loop: "{{ docker_images_list }}"
+      when: (push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0) and not (push_load_skip_pull | default(false) | bool)
+
+    - name: Build list of existing images
+      set_fact:
+        existing_images: "{{ image_check_result.results | selectattr('rc', 'equalto', 0) | map(attribute='item') | list | default([]) }}"
+      when: (push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0) and not (push_load_skip_pull | default(false) | bool)
+
+    - name: Set empty existing_images list when skipping checks
+      set_fact:
+        existing_images: []
+      when: (push_load_tarballs_dir is defined and push_load_tarballs_dir | length > 0) or (push_load_skip_pull | default(false) | bool)
+
+    - name: Determine which images need to be pulled
+      set_fact:
+        images_to_pull: "{{ docker_images_list | reject('in', existing_images | default([])) | list }}"
+      when: (push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0) and not (push_load_skip_pull | default(false) | bool)
+
+    - name: Show images that will be pulled
+      debug:
+        msg: "Pulling {{ images_to_pull | length }} image(s): {{ images_to_pull | join(', ') }}"
+      when: (push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0) and not (push_load_skip_pull | default(false) | bool) and images_to_pull | length > 0
+
+    - name: Show images that already exist locally
+      debug:
+        msg: "Skipping pull for {{ docker_images_list | select('in', existing_images | default([])) | list | length }} image(s) that already exist locally: {{ docker_images_list | select('in', existing_images | default([])) | list | join(', ') }}"
+      when: (push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0) and not (push_load_skip_pull | default(false) | bool) and (docker_images_list | select('in', existing_images | default([])) | list | length > 0)
+
+    - name: Pull Docker images that don't exist locally (skip with -e push_load_skip_pull=true)
       command: "docker pull {{ item }}"
-      loop: "{{ docker_images }}"
-      when: not use_existing_tarballs and not push_load_skip_pull
+      loop: "{{ images_to_pull | default([]) }}"
+      when: (push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0) and not (push_load_skip_pull | default(false) | bool) and images_to_pull | default([]) | length > 0
 
     - name: Save Docker images to tarballs
       command: "docker save -o {{ push_load_tarball_dir }}/{{ item | replace('/', '-') | replace(':', '-') }}.tar {{ item }}"
-      loop: "{{ docker_images }}"
-      when: not use_existing_tarballs
+      loop: "{{ docker_images_list }}"
+      when: push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0
 
     - name: List saved tarballs on controller
       find:
         paths: "{{ push_load_tarball_dir }}"
         patterns: "*.tar"
       register: saved_tars
-      when: not use_existing_tarballs
+      when: push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0
 
     - name: Set tarball list from saved files
       set_fact:
         controller_tarball_dir: "{{ push_load_tarball_dir }}"
         push_load_tar_list: "{{ saved_tars.files | map(attribute='path') | list }}"
-      when: not use_existing_tarballs
+      when: push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0
 
     - name: Fail if no tarballs to push
       fail:
@@ -62,24 +116,29 @@
 - name: Copy tarballs to targets and load into Docker
   hosts: target_hosts
   gather_facts: false
+  remote_user: "{{ push_load_remote_user | default('ubuntu') }}"
   vars:
-    remote_stage_dir: "{{ push_load_tarball_dir }}-{{ ansible_host }}-{{ 100000 | random }}"
     push_load_tar_list: "{{ hostvars['localhost']['push_load_tar_list'] | default([]) }}"
   tasks:
+    - name: Set remote staging directory path
+      set_fact:
+        remote_stage_dir: "{{ push_load_tarball_dir }}-{{ ansible_host }}-{{ 100000 | random }}"
+
     - name: Create staging directory on remote
       file:
         path: "{{ remote_stage_dir }}"
         state: directory
         mode: "0755"
+        recurse: false
 
     - name: Copy tarballs to remote
       copy:
         src: "{{ item }}"
-        dest: "{{ remote_stage_dir }}/"
-        flat: true
+        dest: "{{ remote_stage_dir }}/{{ item | basename }}"
+        mode: "0644"
       loop: "{{ push_load_tar_list }}"
       loop_control:
-        label: "{{ item.split('/')[-1] }}"
+        label: "{{ item | basename }}"
 
     - name: Load all tarballs into Docker on remote
       command: "docker load -i {{ remote_stage_dir }}/{{ item.split('/')[-1] }}"

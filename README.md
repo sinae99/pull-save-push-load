@@ -1,12 +1,12 @@
-# push-load 
+# push-load – Ansible: pull/save Docker images and load on remote hosts
 
-a playbook to **pull** , **save** images to `.tar`, **copy** them to target hosts, and **load** into Docker there.
+One playbook to **pull** (optional), **save** images to `.tar`, **copy** them to target hosts, and **load** into Docker there.
 
 ## Prerequisites
 
 - Docker on the **controller** (the machine where you run `ansible-playbook`) for pull/save.
 - Docker on all **target hosts**; SSH (e.g. `ubuntu`) with sudo for `docker load`.
-- Edit `inventory/hosts.ini` with your target IPs.
+- Edit `inventory/hosts.ini` with your target IPs (same style as `final`).
 
 ## Usage
 
@@ -45,9 +45,9 @@ ansible-playbook playbooks/push-load.yml -e "push_load_tarballs_dir=/path/to/dir
 ansible-playbook playbooks/push-load.yml -l vm1,vm2
 ```
 
-## Example Variables (inventory/group_vars/all.yml or -e)
+## Variables (inventory/group_vars/all.yml or -e)
 
-| Variable | Value | Description |
+| Variable | Default | Description |
 |----------|---------|-------------|
 | `docker_images` | pg_auto_failover, redis, mongo | List of image names to pull/save/load. |
 | `push_load_skip_pull` | `false` | If `true`, do not pull; images must exist on controller. |
@@ -59,3 +59,5 @@ ansible-playbook playbooks/push-load.yml -l vm1,vm2
 - `inventory/hosts.ini` – target hosts (your 3 IPs or more).
 - `inventory/group_vars/all.yml` – default `docker_images` and options.
 - `playbooks/push-load.yml` – single playbook.
+
+This folder is separate from `ansible-old` and `final`; use it whenever you need to ship images to the same (or different) hosts.
