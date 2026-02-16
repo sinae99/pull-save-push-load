@@ -1,12 +1,12 @@
-# push-load – Ansible: pull/save Docker images and load on remote hosts
+# push-load 
 
-One playbook to **pull** (optional), **save** images to `.tar`, **copy** them to target hosts, and **load** into Docker there.
+a playbook to **pull** , **save** images to `.tar`, **copy** them to target hosts, and **load** into Docker there.
 
 ## Prerequisites
 
 - Docker on the **controller** (the machine where you run `ansible-playbook`) for pull/save.
 - Docker on all **target hosts**; SSH (e.g. `ubuntu`) with sudo for `docker load`.
-- Edit `inventory/hosts.ini` with your target IPs (same style as `final`).
+- Edit `inventory/hosts.ini` with your target IPs.
 
 ## Usage
 
@@ -45,7 +45,7 @@ ansible-playbook playbooks/push-load.yml -e "push_load_tarballs_dir=/path/to/dir
 ansible-playbook playbooks/push-load.yml -l vm1,vm2
 ```
 
-## Variables (inventory/group_vars/all.yml or -e)
+## Example Variables (inventory/group_vars/all.yml or -e)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
