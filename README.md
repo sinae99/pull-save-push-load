@@ -1,8 +1,8 @@
-# push-load – Ansible Playbook for Docker Image Distribution
+# push-load –
 
 An Ansible playbook to **pull** Docker images, **save** them as tarballs, **copy** to remote hosts, and **load** them into Docker on target machines.
 
-## Quick Start
+## start
 
 **1. Configure your target hosts**  
 Edit `inventory/hosts.ini` and add your target server IPs:
@@ -32,7 +32,7 @@ playbook will automatically:
 - Load images into Docker on remote hosts
 - Clean up temporary files
 
-## Prerequisites
+## requisites
 
 - **Controller machine** (where you run the playbook):
   - Docker installed and running
