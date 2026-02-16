@@ -1,4 +1,4 @@
-# push-load –
+# push and load
 
 An Ansible playbook to **pull** Docker images, **save** them as tarballs, **copy** to remote hosts, and **load** them into Docker on target machines.
 
