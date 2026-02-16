@@ -1,124 +1,211 @@
 ---
-# Push-load: pull (optional), save images to .tar, copy to target hosts, load into Docker.
+# Push-load: Flexible Docker image distribution playbook
+# Supports multiple modes: tarballs-only, images-only, or mixed
 # Usage:
-#   Full:  ansible-playbook playbooks/push-load.yml
-#   No pull (images already on controller): ansible-playbook playbooks/push-load.yml -e "push_load_skip_pull=true"
-#   Custom images: ansible-playbook playbooks/push-load.yml -e "docker_images=busybox:latest"
-#   Multiple images: ansible-playbook playbooks/push-load.yml -e "docker_images='busybox:latest redis:7.2-alpine'"
-#   Existing tarballs only (no pull/save): ansible-playbook playbooks/push-load.yml -e "push_load_tarballs_dir=/path/to/tars"
-#   Limit hosts: ansible-playbook playbooks/push-load.yml -l vm1,vm2
+#   With config file: ansible-playbook playbooks/push-load.yml -e "@config.yml"
+#   With CLI vars: ansible-playbook playbooks/push-load.yml -e "docker_images=busybox:latest"
+#   With existing tarballs: ansible-playbook playbooks/push-load.yml -e "mode=tarballs" -e "tarballs_dir=/path/to/tars"
 
-- name: Ensure tarball dir on controller and optionally pull + save images
+- name: Load configuration and setup
   hosts: localhost
   connection: local
   gather_facts: false
   become: false
   tasks:
-    - name: Normalize docker_images to list (handle string from -e "docker_images=img1" or "docker_images=img1 img2")
+    # Determine operation mode
+    - name: Set operation mode
+      set_fact:
+        operation_mode: "{{ mode | default('images') if mode is defined else ('tarballs' if push_load_tarballs_dir is defined else 'images') }}"
+
+    # Normalize docker_images to list
+    - name: Normalize docker_images to list
       set_fact:
         docker_images_list: "{{ (docker_images.split(' ') if docker_images is string else docker_images) | default([]) | list }}"
+      when: operation_mode == "images" or operation_mode == "mixed"
 
-    - name: Fail if docker_images not set or empty
-      fail:
-        msg: "docker_images must be set (inventory/group_vars/all.yml or -e 'docker_images=img1' or -e 'docker_images=img1 img2')"
-      when: docker_images_list | default([]) | length == 0
-
-    - name: Use existing tarballs dir (no pull/save)
+    # Handle tarballs configuration
+    - name: Set tarballs directory from config
       set_fact:
-        controller_tarball_dir: "{{ push_load_tarballs_dir }}"
-        push_load_tar_list: "{{ lookup('fileglob', push_load_tarballs_dir + '/*.tar', wantlist=true) }}"
-      when: push_load_tarballs_dir is defined and push_load_tarballs_dir | length > 0
+        tarballs_directory: "{{ tarballs_dir | default(push_load_tarballs_dir | default('')) }}"
+      when: operation_mode == "tarballs" or operation_mode == "mixed"
 
+    - name: Get tarball files from directory
+      find:
+        paths: "{{ tarballs_directory }}"
+        patterns: "*.tar"
+      register: found_tarballs
+      when: >
+        (operation_mode == "tarballs" or operation_mode == "mixed")
+        and tarballs_directory | length > 0
+        and tarballs is not defined
+
+    - name: Set tarball list from directory
+      set_fact:
+        tarball_files: "{{ found_tarballs.files | map(attribute='path') | list }}"
+        controller_tarball_dir: "{{ tarballs_directory }}"
+      when: >
+        (operation_mode == "tarballs" or operation_mode == "mixed")
+        and tarballs_directory | length > 0
+        and tarballs is not defined
+        and found_tarballs.files | length > 0
+
+    - name: Set tarball list from explicit list
+      set_fact:
+        tarball_files: "{{ tarballs | default([]) }}"
+        controller_tarball_dir: "{{ tarballs[0] | dirname | default('.') }}"
+      when: >
+        (operation_mode == "tarballs" or operation_mode == "mixed")
+        and tarballs is defined
+        and tarballs | length > 0
+
+    # Handle images mode - setup directory
     - name: Get current user's home directory for default path
       command: echo $HOME
       register: user_home
       changed_when: false
       when: >
-        (push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0)
-        and push_load_tarball_dir == "/tmp/docker-push-load"
+        (operation_mode == "images" or operation_mode == "mixed")
+        and (tarball_dir | default('/tmp/docker-push-load') == "/tmp/docker-push-load")
 
     - name: Use home directory instead of /tmp for tarball storage
       set_fact:
         push_load_tarball_dir: "{{ user_home.stdout }}/.docker-push-load"
       when: >
-        (push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0)
-        and push_load_tarball_dir == "/tmp/docker-push-load"
+        (operation_mode == "images" or operation_mode == "mixed")
+        and (tarball_dir | default('/tmp/docker-push-load') == "/tmp/docker-push-load")
         and user_home.stdout is defined
+
+    - name: Set tarball directory from config
+      set_fact:
+        push_load_tarball_dir: "{{ tarball_dir | default(push_load_tarball_dir | default('/tmp/docker-push-load')) }}"
+      when: operation_mode == "images" or operation_mode == "mixed"
 
     - name: Ensure tarball directory on controller
       file:
         path: "{{ push_load_tarball_dir }}"
         state: directory
         mode: "0755"
-      when: push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0
+      when: operation_mode == "images" or operation_mode == "mixed"
 
+    # Check existing images
     - name: Check if Docker image exists locally
       command: docker image inspect {{ item }}
       register: image_check_result
       failed_when: false
       changed_when: false
       loop: "{{ docker_images_list }}"
-      when: (push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0) and not (push_load_skip_pull | default(false) | bool)
+      when: >
+        (operation_mode == "images" or operation_mode == "mixed")
+        and not (skip_pull | default(push_load_skip_pull | default(false)) | bool)
 
     - name: Build list of existing images
       set_fact:
         existing_images: "{{ image_check_result.results | selectattr('rc', 'equalto', 0) | map(attribute='item') | list | default([]) }}"
-      when: (push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0) and not (push_load_skip_pull | default(false) | bool)
+      when: >
+        (operation_mode == "images" or operation_mode == "mixed")
+        and not (skip_pull | default(push_load_skip_pull | default(false)) | bool)
 
     - name: Set empty existing_images list when skipping checks
       set_fact:
         existing_images: []
-      when: (push_load_tarballs_dir is defined and push_load_tarballs_dir | length > 0) or (push_load_skip_pull | default(false) | bool)
+      when: >
+        (operation_mode == "images" or operation_mode == "mixed")
+        and (skip_pull | default(push_load_skip_pull | default(false)) | bool)
 
+    # Pull images
     - name: Determine which images need to be pulled
       set_fact:
         images_to_pull: "{{ docker_images_list | reject('in', existing_images | default([])) | list }}"
-      when: (push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0) and not (push_load_skip_pull | default(false) | bool)
+      when: >
+        (operation_mode == "images" or operation_mode == "mixed")
+        and not (skip_pull | default(push_load_skip_pull | default(false)) | bool)
 
     - name: Show images that will be pulled
       debug:
         msg: "Pulling {{ images_to_pull | length }} image(s): {{ images_to_pull | join(', ') }}"
-      when: (push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0) and not (push_load_skip_pull | default(false) | bool) and images_to_pull | length > 0
+      when: >
+        (operation_mode == "images" or operation_mode == "mixed")
+        and not (skip_pull | default(push_load_skip_pull | default(false)) | bool)
+        and images_to_pull | default([]) | length > 0
 
     - name: Show images that already exist locally
       debug:
         msg: "Skipping pull for {{ docker_images_list | select('in', existing_images | default([])) | list | length }} image(s) that already exist locally: {{ docker_images_list | select('in', existing_images | default([])) | list | join(', ') }}"
-      when: (push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0) and not (push_load_skip_pull | default(false) | bool) and (docker_images_list | select('in', existing_images | default([])) | list | length > 0)
+      when: >
+        (operation_mode == "images" or operation_mode == "mixed")
+        and not (skip_pull | default(push_load_skip_pull | default(false)) | bool)
+        and (docker_images_list | select('in', existing_images | default([])) | list | length > 0)
 
-    - name: Pull Docker images that don't exist locally (skip with -e push_load_skip_pull=true)
+    - name: Pull Docker images that don't exist locally
       command: "docker pull {{ item }}"
       loop: "{{ images_to_pull | default([]) }}"
-      when: (push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0) and not (push_load_skip_pull | default(false) | bool) and images_to_pull | default([]) | length > 0
+      when: >
+        (operation_mode == "images" or operation_mode == "mixed")
+        and not (skip_pull | default(push_load_skip_pull | default(false)) | bool)
+        and images_to_pull | default([]) | length > 0
 
+    # Save images to tarballs
     - name: Save Docker images to tarballs
       command: "docker save -o {{ push_load_tarball_dir }}/{{ item | replace('/', '-') | replace(':', '-') }}.tar {{ item }}"
       loop: "{{ docker_images_list }}"
-      when: push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0
+      when: operation_mode == "images" or operation_mode == "mixed"
 
     - name: List saved tarballs on controller
       find:
         paths: "{{ push_load_tarball_dir }}"
         patterns: "*.tar"
       register: saved_tars
-      when: push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0
+      when: operation_mode == "images" or operation_mode == "mixed"
 
-    - name: Set tarball list from saved files
+    - name: Set tarball list from saved images
       set_fact:
         controller_tarball_dir: "{{ push_load_tarball_dir }}"
-        push_load_tar_list: "{{ saved_tars.files | map(attribute='path') | list }}"
-      when: push_load_tarballs_dir is not defined or push_load_tarballs_dir | length == 0
+        image_tarball_files: "{{ saved_tars.files | map(attribute='path') | list }}"
+      when: operation_mode == "images" or operation_mode == "mixed"
 
+    # Combine tarball lists for mixed mode
+    - name: Combine tarball lists for mixed mode
+      set_fact:
+        final_tarball_list: "{{ (tarball_files | default([])) + (image_tarball_files | default([])) }}"
+        controller_tarball_dir: "{{ controller_tarball_dir | default(push_load_tarball_dir) }}"
+      when: operation_mode == "mixed"
+
+    - name: Set final tarball list for tarballs-only mode
+      set_fact:
+        final_tarball_list: "{{ tarball_files | default([]) }}"
+      when: operation_mode == "tarballs"
+
+    - name: Set final tarball list for images-only mode
+      set_fact:
+        final_tarball_list: "{{ image_tarball_files | default([]) }}"
+      when: operation_mode == "images"
+
+    # Validate we have tarballs to deploy
     - name: Fail if no tarballs to push
       fail:
-        msg: "No .tar files found. Set docker_images (and run without push_load_tarballs_dir) or set push_load_tarballs_dir to a dir with .tar files."
-      when: push_load_tar_list | default([]) | length == 0
+        msg: "No .tar files found. Check your configuration: mode={{ operation_mode }}, tarballs_dir={{ tarballs_directory | default('not set') }}, docker_images={{ docker_images_list | default([]) }}"
+      when: final_tarball_list | default([]) | length == 0
+
+    # Create dynamic inventory from config
+    - name: Create dynamic inventory from config
+      add_host:
+        name: "{{ item.name }}"
+        ansible_host: "{{ item.ip }}"
+        groups: target_hosts_dynamic
+      loop: "{{ target_hosts | default([]) }}"
+      when: target_hosts is defined and target_hosts | length > 0
+
+    - name: Set inventory source
+      set_fact:
+        inventory_source: "{{ 'target_hosts_dynamic' if (target_hosts is defined and target_hosts | length > 0) else 'target_hosts' }}"
 
 - name: Copy tarballs to targets and load into Docker
-  hosts: target_hosts
+  hosts: "{{ inventory_source }}"
   gather_facts: false
-  remote_user: "{{ push_load_remote_user | default('ubuntu') }}"
+  remote_user: "{{ remote_user | default(push_load_remote_user | default('ubuntu')) }}"
   vars:
-    push_load_tar_list: "{{ hostvars['localhost']['push_load_tar_list'] | default([]) }}"
+    push_load_tar_list: "{{ hostvars['localhost']['final_tarball_list'] | default([]) }}"
+    push_load_tarball_dir: "{{ hostvars['localhost']['controller_tarball_dir'] | default('/tmp/docker-push-load') }}"
   tasks:
     - name: Set remote staging directory path
       set_fact:
@@ -141,10 +228,10 @@
         label: "{{ item | basename }}"
 
     - name: Load all tarballs into Docker on remote
-      command: "docker load -i {{ remote_stage_dir }}/{{ item.split('/')[-1] }}"
+      command: "docker load -i {{ remote_stage_dir }}/{{ item | basename }}"
       loop: "{{ push_load_tar_list }}"
       loop_control:
-        label: "{{ item.split('/')[-1] }}"
+        label: "{{ item | basename }}"
       register: load_result
       changed_when: "'Loaded image' in load_result.stdout or 'Loaded image' in load_result.stderr"
 

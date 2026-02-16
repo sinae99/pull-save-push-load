@@ -1,0 +1,68 @@
+# Push-load Configuration File
+# Copy this file to config.yml and customize for your needs
+# Usage: ansible-playbook playbooks/push-load.yml -e "@config.yml"
+
+# ---------------------------------------------------------------------------
+# TARGET HOSTS
+# ---------------------------------------------------------------------------
+# Option 1: Specify hosts directly (IPs or hostnames)
+target_hosts:
+  - name: vm1
+    ip: 192.168.1.100
+  - name: vm2
+    ip: 192.168.1.101
+  - name: vm3
+    ip: 192.168.1.102
+
+# Option 2: Use existing inventory file (set use_inventory: true)
+# use_inventory: false
+
+# ---------------------------------------------------------------------------
+# OPERATION MODE
+# ---------------------------------------------------------------------------
+# Mode options:
+#   "tarballs"  - Use existing tarballs (no pull, no save)
+#   "images"    - Use image list (pull if needed, save, deploy)
+#   "mixed"     - Use both tarballs and images
+mode: "images"  # or "tarballs" or "mixed"
+
+# ---------------------------------------------------------------------------
+# TARBALL CONFIGURATION (for mode: "tarballs" or "mixed")
+# ---------------------------------------------------------------------------
+# Directory containing existing tarball files
+tarballs_dir: "/path/to/docker-images"
+
+# OR specify tarball files directly
+# tarballs:
+#   - /path/to/image1.tar
+#   - /path/to/image2.tar
+#   - /path/to/image3.tar
+
+# ---------------------------------------------------------------------------
+# IMAGE CONFIGURATION (for mode: "images" or "mixed")
+# ---------------------------------------------------------------------------
+# List of Docker images to pull/save/deploy
+docker_images:
+  - busybox:latest
+  - redis:7.2-alpine
+  - nginx:latest
+
+# Skip pulling images (they must already exist locally)
+skip_pull: false
+
+# Directory to save tarballs (defaults to ~/.docker-push-load/)
+tarball_dir: "/tmp/docker-push-load"
+
+# ---------------------------------------------------------------------------
+# REMOTE CONFIGURATION
+# ---------------------------------------------------------------------------
+# SSH user for remote hosts
+remote_user: "ubuntu"
+
+# ---------------------------------------------------------------------------
+# ADVANCED OPTIONS
+# ---------------------------------------------------------------------------
+# Limit deployment to specific hosts (optional)
+# limit_hosts:
+#   - vm1
+#   - vm2
