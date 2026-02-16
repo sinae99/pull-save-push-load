@@ -1,0 +1,99 @@
+---
+# Push-load: pull (optional), save images to .tar, copy to target hosts, load into Docker.
+# Usage:
+#   Full:  ansible-playbook playbooks/push-load.yml
+#   No pull (images already on controller): ansible-playbook playbooks/push-load.yml -e "push_load_skip_pull=true"
+#   Custom images: ansible-playbook playbooks/push-load.yml -e "docker_images=citusdata/pg_auto_failover:latest redis:7.2-alpine"
+#   Existing tarballs only (no pull/save): ansible-playbook playbooks/push-load.yml -e "push_load_tarballs_dir=/path/to/tars"
+#   Limit hosts: ansible-playbook playbooks/push-load.yml -l vm1,vm2
+
+- name: Ensure tarball dir on controller and optionally pull + save images
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # When set, we only copy/load existing .tar from this dir (no pull, no save)
+    push_load_tarballs_dir: "{{ push_load_tarballs_dir | default('') }}"
+    use_existing_tarballs: "{{ push_load_tarballs_dir | length > 0 }}"
+    # Allow docker_images as space-separated string from -e "docker_images=img1 img2"
+    docker_images: "{{ docker_images if docker_images is sequence and docker_images is not string else (docker_images.split() if docker_images is string else []) }}"
+  tasks:
+    - name: Use existing tarballs dir (no pull/save)
+      set_fact:
+        controller_tarball_dir: "{{ push_load_tarballs_dir }}"
+        push_load_tar_list: "{{ lookup('fileglob', push_load_tarballs_dir + '/*.tar', wantlist=true) }}"
+      when: use_existing_tarballs
+
+    - name: Ensure tarball directory on controller
+      file:
+        path: "{{ push_load_tarball_dir }}"
+        state: directory
+        mode: "0755"
+      when: not use_existing_tarballs
+
+    - name: Pull Docker images (skip with -e push_load_skip_pull=true)
+      command: "docker pull {{ item }}"
+      loop: "{{ docker_images }}"
+      when: not use_existing_tarballs and not push_load_skip_pull
+
+    - name: Save Docker images to tarballs
+      command: "docker save -o {{ push_load_tarball_dir }}/{{ item | replace('/', '-') | replace(':', '-') }}.tar {{ item }}"
+      loop: "{{ docker_images }}"
+      when: not use_existing_tarballs
+
+    - name: List saved tarballs on controller
+      find:
+        paths: "{{ push_load_tarball_dir }}"
+        patterns: "*.tar"
+      register: saved_tars
+      when: not use_existing_tarballs
+
+    - name: Set tarball list from saved files
+      set_fact:
+        controller_tarball_dir: "{{ push_load_tarball_dir }}"
+        push_load_tar_list: "{{ saved_tars.files | map(attribute='path') | list }}"
+      when: not use_existing_tarballs
+
+    - name: Fail if no tarballs to push
+      fail:
+        msg: "No .tar files found. Set docker_images (and run without push_load_tarballs_dir) or set push_load_tarballs_dir to a dir with .tar files."
+      when: push_load_tar_list | default([]) | length == 0
+
+- name: Copy tarballs to targets and load into Docker
+  hosts: target_hosts
+  gather_facts: false
+  vars:
+    remote_stage_dir: "{{ push_load_tarball_dir }}-{{ ansible_host }}-{{ 100000 | random }}"
+    push_load_tar_list: "{{ hostvars['localhost']['push_load_tar_list'] | default([]) }}"
+  tasks:
+    - name: Create staging directory on remote
+      file:
+        path: "{{ remote_stage_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy tarballs to remote
+      copy:
+        src: "{{ item }}"
+        dest: "{{ remote_stage_dir }}/"
+        flat: true
+      loop: "{{ push_load_tar_list }}"
+      loop_control:
+        label: "{{ item.split('/')[-1] }}"
+
+    - name: Load all tarballs into Docker on remote
+      command: "docker load -i {{ remote_stage_dir }}/{{ item.split('/')[-1] }}"
+      loop: "{{ push_load_tar_list }}"
+      loop_control:
+        label: "{{ item.split('/')[-1] }}"
+      register: load_result
+      changed_when: "'Loaded image' in load_result.stdout or 'Loaded image' in load_result.stderr"
+
+    - name: Remove remote staging directory
+      file:
+        path: "{{ remote_stage_dir }}"
+        state: absent
+
+    - name: Show loaded images on {{ inventory_hostname }}
+      debug:
+        msg: "Loaded {{ push_load_tar_list | length }} image(s) on {{ inventory_hostname }}"

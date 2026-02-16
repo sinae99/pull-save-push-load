@@ -1,0 +1,19 @@
+# ---------------------------------------------------------------------------
+# Push-load: which images to pull/save and push to targets.
+# Override from CLI: -e "docker_images=img1 img2" -e "push_load_skip_pull=true"
+# ---------------------------------------------------------------------------
+
+# Images to pull (optional), save, and load on remotes. Name format: repo/name:tag
+docker_images:
+  - citusdata/pg_auto_failover:latest
+  - redis:7.2-alpine
+  - mongo:7
+
+# Set true to skip pull (images must already exist on controller). Use when you have them locally.
+push_load_skip_pull: false
+
+# Directory on controller where tarballs are saved; same path used on remotes for staging before load.
+push_load_tarball_dir: "/tmp/docker-push-load"
+
+# Remote user for copy/load (same as your SSH user).
+push_load_remote_user: "ubuntu"
