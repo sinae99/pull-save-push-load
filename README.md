@@ -47,7 +47,7 @@ ansible-playbook playbooks/push-load.yml -l vm1,vm2
 
 ## Example Variables (inventory/group_vars/all.yml or -e)
 
-| Variable | Default | Description |
+| Variable | Value | Description |
 |----------|---------|-------------|
 | `docker_images` | pg_auto_failover, redis, mongo | List of image names to pull/save/load. |
 | `push_load_skip_pull` | `false` | If `true`, do not pull; images must exist on controller. |
