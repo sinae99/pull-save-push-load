@@ -200,7 +200,7 @@
         inventory_source: "{{ 'target_hosts_dynamic' if (target_hosts is defined and target_hosts | length > 0) else 'target_hosts' }}"
 
 - name: Copy tarballs to targets and load into Docker
-  hosts: "{{ inventory_source }}"
+  hosts: target_hosts_dynamic
   gather_facts: false
   remote_user: "{{ remote_user | default(push_load_remote_user | default('ubuntu')) }}"
   vars:
